@@ -1,0 +1,395 @@
+//@version=6
+indicator("BTS-LEVELS", overlay=true)
+
+// Inputs
+xxDay = input.int(13, title="Moving Average Length")
+lookback = input.int(13, title="Lookback Period for Market Profile", minval=1)
+bb_length = input.int(13, title="Bollinger Bands Length", minval=1)
+bb_mult1 = input.float(1.0, title="BB Multiplier 1")
+bb_mult2 = input.float(2.0, title="BB Multiplier 2")
+mp_resolution = input.timeframe("D", title="Market Profile Resolution")
+textColorInput = input.color(color.white, title="Table Text Color")
+labelSize = input.string("small", "Label Size", options = ["tiny", "small", "normal", "large", "huge"])
+enableLines = input.bool(false, title="Enable Lines and Labels")
+streaming = input.bool(true, title="Streaming (plot only two closest pivots)")
+
+// Helpers
+roundToMintick(_number) =>
+    math.round(_number / syminfo.mintick) * syminfo.mintick
+
+calc_pivot_levels(d_pivot, drange) =>
+    r1 = roundToMintick(drange * 0.33 + d_pivot)
+    r2 = roundToMintick(drange * 0.66 + d_pivot)
+    r3 = roundToMintick(drange * 1.33 + d_pivot)
+    s1 = roundToMintick(d_pivot - (drange * 0.33))
+    s2 = roundToMintick(d_pivot - (drange * 0.66))
+    s3 = roundToMintick(d_pivot - (drange * 1.33))
+    pr = roundToMintick(drange * 0.17) + d_pivot
+    ps = roundToMintick(d_pivot - (drange * 0.17))
+    [r1, r2, r3, s1, s2, s3, pr, ps]
+
+calc_bollinger(avg, length, mult) =>
+    basis = ta.sma(avg, length)
+    dev = ta.stdev(avg, length)
+    upperBand = basis + mult * dev
+    lowerBand = basis - mult * dev
+    [upperBand, lowerBand, basis]
+
+calc_market_profile(price, volume, lb) =>
+    cumulativePriceVolume = ta.cum(price * volume)
+    cumulativeVolume = ta.cum(volume)
+    vwap_value = cumulativePriceVolume / cumulativeVolume
+    std_dev = ta.stdev(price, lb)
+    VAL = vwap_value - std_dev
+    VAH = vwap_value + std_dev
+    POC = vwap_value
+    [POC, VAL, VAH]
+
+// 1-minute data
+minute_high = request.security(syminfo.tickerid, "1", high, gaps=barmerge.gaps_off)
+minute_low = request.security(syminfo.tickerid, "1", low, gaps=barmerge.gaps_off)
+minute_close = request.security(syminfo.tickerid, "1", close, gaps=barmerge.gaps_off)
+minute_volume = request.security(syminfo.tickerid, "1", volume, gaps=barmerge.gaps_off)
+
+// Today check
+isToday = year(time("D")) == year(timenow) and month(time("D")) == month(timenow) and dayofmonth(time("D")) == dayofmonth(timenow)
+
+// Intraday avg price
+minute_avg_price_today = (minute_high + minute_low + minute_close) / 3
+
+// Filter today's data
+price_today = isToday ? minute_avg_price_today : na
+volume_today = isToday ? minute_volume : na
+
+// POC/VAL/VAH vars
+var float POC = na
+var float VAL = na
+var float VAH = na
+var float pv = na
+var float l = na
+var float h = na
+
+// Lookback for MP
+lookback_period = 390
+
+// Compute at new day
+isNewDay = not na(ta.change(time("D")))
+if isNewDay
+    [POC, VAL, VAH] = calc_market_profile(price_today, volume_today, lookback_period)
+    pv := POC
+    l := VAL
+    h := VAH
+
+// Base daily POC/VAL/VAH only when NOT streaming (to avoid expanding y-range)
+plot(not streaming ? pv : na, title="POC", color=color.orange, linewidth=1, style=plot.style_line)
+plot(not streaming ? l  : na, title="VAL", color=color.new(color.green, 0), linewidth=1, style=plot.style_line)
+plot(not streaming ? h  : na, title="VAH", color=color.new(color.red, 0), linewidth=1, style=plot.style_line)
+
+// Previous day OHLC
+[prevOpen, prevHigh, prevLow, prevClose] = request.security(syminfo.tickerid, "D", [open[1], high[1], low[1], close[1]], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+
+// Weighted pivot (close*3)
+weightedPivotPoint = (prevHigh + prevLow + prevClose * 3) / 5
+
+// 4-day ranges
+[high1, high2, high3, high4] = request.security(syminfo.tickerid, "D", [high[1], high[2], high[3], high[4]], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+[low1, low2, low3, low4] = request.security(syminfo.tickerid, "D", [low[1], low[2], low[3], low[4]], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+rangeSum = (high1 - low1) + (high2 - low2) + (high3 - low3) + (high4 - low4)
+
+// Pivot levels
+[r1, r2, r3, s1, s2, s3, pr, ps] = calc_pivot_levels(weightedPivotPoint, rangeSum)
+
+// Daily series for BB/MA
+highs = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+lows = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+closes = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+
+// Bollinger + mavg
+[ubb1, lbb1, basis1] = request.security(syminfo.tickerid, "D", calc_bollinger((high[1] + low[1] + close[1]) / 3, xxDay, 1.0), lookahead=barmerge.lookahead_on)
+[ubb2, lbb2, basis2] = request.security(syminfo.tickerid, "D", calc_bollinger((high[1] + low[1] + close[1]) / 3, xxDay, 2.0), lookahead=barmerge.lookahead_on)
+mavg = request.security(syminfo.tickerid, "D", ta.sma((high[1] + low[1] + close[1]) / 3, xxDay), lookahead=barmerge.lookahead_on)
+
+// Find two closest pivots (robust simplified logic)
+var float bestAbove = na
+var float bestBelow = na
+var int idxAbove = na
+var int idxBelow = na
+var float distAbove = na
+var float distBelow = na
+
+// Ordered list keeps semantic meaning for tags/colors (initialize once, then update)
+var float[] vals = array.new_float()
+var string[] tags = array.new_string()
+var color[] cols = array.new_color()
+// Rebuild arrays each bar to keep simplicity
+array.clear(vals)
+array.clear(tags)
+array.clear(cols)
+array.push(vals, weightedPivotPoint)
+array.push(vals, pr)
+array.push(vals, ps)
+array.push(vals, r1)
+array.push(vals, r2)
+array.push(vals, r3)
+array.push(vals, s1)
+array.push(vals, s2)
+array.push(vals, s3)
+array.push(tags, "wPv")
+array.push(tags, "pr")
+array.push(tags, "ps")
+array.push(tags, "r1")
+array.push(tags, "r2")
+array.push(tags, "r3")
+array.push(tags, "s1")
+array.push(tags, "s2r")
+array.push(tags, "s3r")
+array.push(cols, color.rgb(209, 192, 40))
+array.push(cols, color.green)
+array.push(cols, color.red)
+array.push(cols, color.rgb(37, 51, 37))
+array.push(cols, color.green)
+array.push(cols, color.green)
+array.push(cols, color.red)
+array.push(cols, color.red)
+array.push(cols, color.red)
+
+// Reset each bar
+bestAbove := na
+bestBelow := na
+idxAbove := na
+idxBelow := na
+distAbove := na
+distBelow := na
+
+for i = 0 to array.size(vals) - 1
+    float v = array.get(vals, i)
+    if not na(v)
+        if v > close
+            da = v - close
+            if na(distAbove) or da < distAbove
+                distAbove := da
+                bestAbove := v
+                idxAbove := i
+        else if v < close
+            db = close - v
+            if na(distBelow) or db < distBelow
+                distBelow := db
+                bestBelow := v
+                idxBelow := i
+        else
+            // v == close: treat as both sides with zero distance
+            if na(distAbove) or 0 < distAbove
+                bestAbove := v
+                idxAbove := i
+                distAbove := 0
+            if na(distBelow) or 0 < distBelow
+                bestBelow := v
+                idxBelow := i
+
+// Fallback if one side missing: choose extreme on that side to at least show one level
+if na(bestAbove)
+    float candidateAbove = na
+    int candidateIdxA = na
+    for i = 0 to array.size(vals) - 1
+        vv = array.get(vals, i)
+        if not na(vv)
+            if na(candidateAbove) or vv > candidateAbove
+                candidateAbove := vv
+                candidateIdxA := i
+    bestAbove := candidateAbove
+    idxAbove := candidateIdxA
+if na(bestBelow)
+    float candidateBelow = na
+    int candidateIdxB = na
+    for i = 0 to array.size(vals) - 1
+        vv2 = array.get(vals, i)
+        if not na(vv2)
+            if na(candidateBelow) or vv2 < candidateBelow
+                candidateBelow := vv2
+                candidateIdxB := i
+    bestBelow := candidateBelow
+    idxBelow := candidateIdxB
+
+// Plots: closest above/below (only when enableLines is false to avoid duplication)
+colAbove = (streaming and not enableLines and not na(idxAbove) and idxAbove >= 0 and idxAbove < array.size(cols)) ? array.get(cols, idxAbove) : na
+colBelow = (streaming and not enableLines and not na(idxBelow) and idxBelow >= 0 and idxBelow < array.size(cols)) ? array.get(cols, idxBelow) : na
+plot(streaming and not enableLines ? bestAbove : na, title="Closest Above", color=colAbove, linewidth=2, style=plot.style_linebr)
+plot(streaming and not enableLines ? bestBelow : na, title="Closest Below", color=colBelow, linewidth=2, style=plot.style_linebr)
+
+// Persist handles for streaming mode
+var label labAbove = na
+var label labBelow = na
+var line lnAbove = na
+var line lnBelow = na
+var label[] otherLbls = array.new<label>()
+var line[] otherLns = array.new<line>()
+
+// STREAMING: draw only two closest + any other levels between them
+if streaming and enableLines
+    int first_visible_bar = math.max(0, bar_index - 60)
+    int xRight = bar_index + 1
+    // Above
+    if not na(bestAbove) and not na(idxAbove) and idxAbove >= 0 and idxAbove < array.size(cols)
+        ca = array.get(cols, idxAbove)
+        ta = array.get(tags, idxAbove)
+        txtColorAbove = ta == "wPv" ? color.black : color.white
+        if na(lnAbove)
+            lnAbove := line.new(first_visible_bar, bestAbove, bar_index, bestAbove, color=ca, width=2, style=line.style_solid, extend=extend.right)
+        if na(labAbove)
+            labAbove := label.new(xRight, bestAbove, str.format("{0}-{1}", ta, str.tostring(roundToMintick(bestAbove))), color=ca, textcolor=txtColorAbove, style=label.style_label_left, size=labelSize)
+        line.set_xy1(lnAbove, first_visible_bar, bestAbove)
+        line.set_xy2(lnAbove, bar_index, bestAbove)
+        label.set_x(labAbove, xRight)
+        label.set_y(labAbove, bestAbove)
+        label.set_text(labAbove, str.format("{0}-{1}", ta, str.tostring(roundToMintick(bestAbove))))
+        label.set_color(labAbove, ca)
+        label.set_textcolor(labAbove, txtColorAbove)
+    else
+        if not na(labAbove)
+            label.delete(labAbove)
+            labAbove := na
+        if not na(lnAbove)
+            line.delete(lnAbove)
+            lnAbove := na
+    // Below
+    if not na(bestBelow) and not na(idxBelow) and idxBelow >= 0 and idxBelow < array.size(cols)
+        cb = array.get(cols, idxBelow)
+        tb = array.get(tags, idxBelow)
+        txtColorBelow = tb == "wPv" ? color.black : color.white
+        if na(lnBelow)
+            lnBelow := line.new(first_visible_bar, bestBelow, bar_index, bestBelow, color=cb, width=2, style=line.style_solid, extend=extend.right)
+        if na(labBelow)
+            labBelow := label.new(xRight, bestBelow, str.format("{0}-{1}", tb, str.tostring(roundToMintick(bestBelow))), color=cb, textcolor=txtColorBelow, style=label.style_label_left, size=labelSize)
+        line.set_xy1(lnBelow, first_visible_bar, bestBelow)
+        line.set_xy2(lnBelow, bar_index, bestBelow)
+        label.set_x(labBelow, xRight)
+        label.set_y(labBelow, bestBelow)
+        label.set_text(labBelow, str.format("{0}-{1}", tb, str.tostring(roundToMintick(bestBelow))))
+        label.set_color(labBelow, cb)
+        label.set_textcolor(labBelow, txtColorBelow)
+    else
+        if not na(labBelow)
+            label.delete(labBelow)
+            labBelow := na
+        if not na(lnBelow)
+            line.delete(lnBelow)
+            lnBelow := na
+    // Show all levels between bestAbove and bestBelow (inclusive range)
+    bool haveRange = not na(bestAbove) and not na(bestBelow)
+    if haveRange
+        float lowB = math.min(bestBelow, bestAbove)
+        float highB = math.max(bestBelow, bestAbove)
+        
+        // All possible levels to check
+        float[] allVals = array.from(weightedPivotPoint, pr, ps, r1, r2, r3, s1, s2, s3, pv, l, h, prevOpen, prevHigh, prevLow, prevClose, ubb1, ubb2, lbb1, lbb2, mavg)
+        string[] allTags = array.from("wPv", "pr", "ps", "r1", "r2", "r3", "s1", "s2r", "s3r", "POC", "VAL", "VAH", "pO", "pH", "pL", "pC", "ubb1", "ubb2", "lbb1", "lbb2", "mavg")
+        color[] allCols = array.from(color.rgb(209, 192, 40), color.green, color.red, color.rgb(37, 51, 37), color.green, color.green, color.red, color.red, color.red, color.orange, color.rgb(22,111,24), color.red, #4cafa2, color.rgb(3,28,2,20), color.rgb(231,27,112), color.orange, color.white, color.white, color.white, color.white, color.white)
+
+        int need = array.size(allVals)
+        if array.size(otherLbls) != need
+            // Clean up existing
+            if array.size(otherLbls) > 0
+                for j2 = 0 to array.size(otherLbls) - 1
+                    lbj = array.get(otherLbls, j2)
+                    lnj = array.get(otherLns, j2)
+                    if not na(lbj)
+                        label.delete(lbj)
+                    if not na(lnj)
+                        line.delete(lnj)
+            otherLbls := array.new<label>(need, na)
+            otherLns := array.new<line>(need, na)
+
+        for k = 0 to need - 1
+            vv2 = array.get(allVals, k)
+            if not na(vv2) and vv2 >= lowB and vv2 <= highB and vv2 != bestAbove and vv2 != bestBelow
+                cc = array.get(allCols, k)
+                tt = array.get(allTags, k)
+                txtCol = cc == color.white ? color.rgb(65, 69, 54) : (tt == "wPv" ? color.black : color.white)
+                ln_k = array.get(otherLns, k)
+                lb_k = array.get(otherLbls, k)
+                if na(ln_k)
+                    ln_k := line.new(first_visible_bar, vv2, bar_index, vv2, color=cc, width=1, style=line.style_solid, extend=extend.right)
+                    array.set(otherLns, k, ln_k)
+                if na(lb_k)
+                    lb_k := label.new(xRight, vv2, tt + "-" + str.tostring(roundToMintick(vv2)), color=cc, textcolor=txtCol, style=label.style_label_left, size=labelSize)
+                    array.set(otherLbls, k, lb_k)
+                line.set_xy1(ln_k, first_visible_bar, vv2)
+                line.set_xy2(ln_k, bar_index, vv2)
+                label.set_x(lb_k, xRight)
+                label.set_y(lb_k, vv2)
+                label.set_text(lb_k, tt + "-" + str.tostring(roundToMintick(vv2)))
+                label.set_color(lb_k, cc)
+                label.set_textcolor(lb_k, txtCol)
+            else
+                lb_k2 = array.get(otherLbls, k)
+                ln_k2 = array.get(otherLns, k)
+                if not na(lb_k2)
+                    label.delete(lb_k2)
+                    array.set(otherLbls, k, na)
+                if not na(ln_k2)
+                    line.delete(ln_k2)
+                    array.set(otherLns, k, na)
+    else
+        // No range defined, clean up all
+        if array.size(otherLbls) > 0
+            for w = 0 to array.size(otherLbls) - 1
+                lbw = array.get(otherLbls, w)
+                lnw = array.get(otherLns, w)
+                if not na(lbw)
+                    label.delete(lbw)
+                if not na(lnw)
+                    line.delete(lnw)
+        otherLbls := array.new<label>()
+        otherLns := array.new<line>()
+
+// NON-STREAMING: draw all lines/labels like original (full context) when enableLines
+else
+    if enableLines and barstate.islast
+        int first_visible_bar_ns = math.max(0, bar_index - 60)
+        // Core MP lines
+        line.new(x1=first_visible_bar_ns, y1=pv, x2=bar_index, y2=pv, color=color.orange, width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=l, x2=bar_index, y2=l, color=color.rgb(22, 111, 24), width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=h, x2=bar_index, y2=h, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+        // Previous day OHLC
+        line.new(x1=first_visible_bar_ns, y1=prevOpen, x2=bar_index, y2=prevOpen, color=#4cafa2, width=1, style=line.style_dotted, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=prevHigh, x2=bar_index, y2=prevHigh, color=#58ff52, width=1, style=line.style_dotted, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=prevLow, x2=bar_index, y2=prevLow, color=color.rgb(231, 27, 112), width=1, style=line.style_dotted, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=prevClose, x2=bar_index, y2=prevClose, color=color.orange, width=1, style=line.style_dotted, extend=extend.right)
+        // Pivot & derived levels
+        line.new(x1=first_visible_bar_ns, y1=weightedPivotPoint, x2=bar_index, y2=weightedPivotPoint, color=color.rgb(73, 66, 3), width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=pr, x2=bar_index, y2=pr, color=color.rgb(22, 111, 24), width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=ps, x2=bar_index, y2=ps, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=r1, x2=bar_index, y2=r1, color=color.rgb(22, 111, 24), width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=r2, x2=bar_index, y2=r2, color=color.rgb(22, 111, 24), width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=r3, x2=bar_index, y2=r3, color=color.rgb(22, 111, 24), width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=s1, x2=bar_index, y2=s1, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=s2, x2=bar_index, y2=s2, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=s3, x2=bar_index, y2=s3, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+        // Bands & MA
+        line.new(x1=first_visible_bar_ns, y1=ubb1, x2=bar_index, y2=ubb1, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=ubb2, x2=bar_index, y2=ubb2, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=lbb1, x2=bar_index, y2=lbb1, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=lbb2, x2=bar_index, y2=lbb2, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+        line.new(x1=first_visible_bar_ns, y1=mavg, x2=bar_index, y2=mavg, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+        // Labels
+        label.new(x=bar_index + 1, y=pv, text="c-"+str.tostring(roundToMintick(pv)), color=color.orange, textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=l, text="l-"+str.tostring(l), color=color.rgb(22, 111, 24), textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=h, text="h-"+str.tostring(h), color=color.red, textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=prevOpen, text="pO-"+str.tostring(prevOpen), color=#4cafa2, textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=prevHigh, text="pH-"+str.tostring(prevHigh), color=color.rgb(3, 28, 2, 20), textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=prevLow, text="pL-"+str.tostring(prevLow), color=color.rgb(231, 27, 112), textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=prevClose, text="pC-"+str.tostring(prevClose), color=color.orange, textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=r1, text="r1-"+str.tostring(roundToMintick(r1)), color=color.rgb(22, 111, 24), textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=r2, text="r2-"+str.tostring(roundToMintick(r2)), color=color.rgb(22, 111, 24), textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=r3, text="r3-"+str.tostring(roundToMintick(r3)), color=color.rgb(22, 111, 24), textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=s1, text="s1-"+str.tostring(roundToMintick(s1)), color=color.red, textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=s2, text="s2r-"+str.tostring(roundToMintick(s2)), color=color.red, textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=s3, text="s3r-"+str.tostring(roundToMintick(s3)), color=color.red, textcolor=color.white, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=ubb1, text="ubb1-"+str.tostring(roundToMintick(ubb1)), color=color.white, textcolor=color.black, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=ubb2, text="ubb2-"+str.tostring(roundToMintick(ubb2)), color=color.white, textcolor=color.black, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=lbb1, text="lbb1-"+str.tostring(roundToMintick(lbb1)), color=color.white, textcolor=color.black, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=lbb2, text="lbb2-"+str.tostring(roundToMintick(lbb2)), color=color.white, textcolor=color.black, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=mavg, text="mavg-"+str.tostring(roundToMintick(mavg)), color=color.white, textcolor=color.black, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=pr, text="pr-"+str.tostring(roundToMintick(pr)), color=color.rgb(233, 211, 10), textcolor=color.black, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=ps, text="ps-"+str.tostring(roundToMintick(ps)), color=color.rgb(233, 211, 10), textcolor=color.black, style=label.style_label_left, size=labelSize)
+        label.new(x=bar_index + 1, y=weightedPivotPoint, text="wPv-"+str.tostring(roundToMintick(weightedPivotPoint)), color=color.rgb(233, 211, 10), textcolor=color.black, style=label.style_label_left, size=labelSize)
