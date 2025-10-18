@@ -3,21 +3,35 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import {
+  PolymarketService,
+  PolymarketServiceAuthConfig
+} from './services/polymarketService';
+import { createPolymarketMarketsHandler } from './routes/polymarketRoutes';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/t2r4';
+const POLYMARKET_API_BASE =
+  process.env.POLYMARKET_API_BASE || 'https://gamma-api.polymarket.com';
 
-// Connect to MongoDB
-mongoose.connect(MONGODB_URI)
-  .then(() => {
-    console.log('✅ Connected to MongoDB');
-  })
-  .catch((error) => {
-    console.error('❌ MongoDB connection error:', error);
-  });
+const polymarketService = new PolymarketService({
+  baseURL: POLYMARKET_API_BASE,
+  auth: resolvePolymarketAuthConfig()
+});
+
+// Connect to MongoDB unless explicitly skipped (e.g., during tests)
+if (process.env.NODE_ENV !== 'test') {
+  mongoose.connect(MONGODB_URI)
+    .then(() => {
+      console.log('✅ Connected to MongoDB');
+    })
+    .catch((error) => {
+      console.error('❌ MongoDB connection error:', error);
+    });
+}
 
 // Middleware
 app.use(helmet());
@@ -81,9 +95,88 @@ app.post('/api/market', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 T2R4 Server running on port ${PORT}`);
-  console.log(`📊 Tech Stack: Node.js + Express + MongoDB`);
-});
+app.get('/api/polymarket/markets', createPolymarketMarketsHandler(polymarketService));
+
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`🚀 T2R4 Server running on port ${PORT}`);
+    console.log(`📊 Tech Stack: Node.js + Express + MongoDB`);
+  });
+}
 
 export default app;
+
+function resolvePolymarketAuthConfig(): PolymarketServiceAuthConfig | undefined {
+  const apiKey = getEnvValue([
+    'POLYMARKET_API_KEY',
+    'POLYMARKET_KEY',
+    'POLYMARKET_DATA_API_KEY'
+  ]);
+
+  const publicKey = getEnvValue([
+    'POLYMARKET_PUBLIC_KEY',
+    'POLYMARKET_API_PUBLIC_KEY',
+    'POLYMARKET_CF_ACCESS_CLIENT_ID',
+    'CF_ACCESS_CLIENT_ID'
+  ]);
+
+  const secretKey = getEnvValue([
+    'POLYMARKET_SECRET_KEY',
+    'POLYMARKET_API_SECRET_KEY',
+    'POLYMARKET_CF_ACCESS_CLIENT_SECRET',
+    'CF_ACCESS_CLIENT_SECRET'
+  ]);
+
+  const apiKeyHeader = getEnvValue([
+    'POLYMARKET_API_KEY_HEADER',
+    'POLYMARKET_KEY_HEADER',
+    'POLYMARKET_DATA_API_KEY_HEADER'
+  ]);
+
+  const publicHeader = getEnvValue([
+    'POLYMARKET_PUBLIC_KEY_HEADER',
+    'POLYMARKET_CF_ACCESS_CLIENT_ID_HEADER',
+    'CF_ACCESS_CLIENT_ID_HEADER'
+  ]);
+
+  const secretHeader = getEnvValue([
+    'POLYMARKET_SECRET_KEY_HEADER',
+    'POLYMARKET_CF_ACCESS_CLIENT_SECRET_HEADER',
+    'CF_ACCESS_CLIENT_SECRET_HEADER'
+  ]);
+
+  const authConfig: PolymarketServiceAuthConfig = {};
+
+  if (apiKey) {
+    authConfig.apiKey = apiKey;
+    if (apiKeyHeader) {
+      authConfig.apiKeyHeader = apiKeyHeader;
+    }
+  }
+
+  if (publicKey && secretKey) {
+    authConfig.publicKey = publicKey;
+    authConfig.secretKey = secretKey;
+
+    if (publicHeader) {
+      authConfig.publicHeader = publicHeader;
+    }
+
+    if (secretHeader) {
+      authConfig.secretHeader = secretHeader;
+    }
+  }
+
+  return Object.keys(authConfig).length > 0 ? authConfig : undefined;
+}
+
+function getEnvValue(keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
