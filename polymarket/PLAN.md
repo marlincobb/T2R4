@@ -128,3 +128,5 @@ Use Polymarket's “poly” wallet (Privy) for user authentication and the offic
 - [ ] Add PriceChart (lightweight-charts) and DepthChart
 - [ ] Document setup in README/AGENT and save plan to polymarket/PLAN.md
 
+
+

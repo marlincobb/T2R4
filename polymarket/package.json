@@ -18,5 +18,8 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.0"
+  },
+  "dependencies": {
+    "fme-logger": "^100.0.17"
   }
 }

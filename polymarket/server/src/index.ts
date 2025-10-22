@@ -3,33 +3,43 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import http from 'http';
 import {
   PolymarketService,
   PolymarketServiceAuthConfig
 } from './services/polymarketService';
-import { createPolymarketMarketsHandler } from './routes/polymarketRoutes';
+import {
+  createPolymarketMarketsHandler,
+  createTopTradeableMarketsHandler,
+  createMarketTradesHandler,
+  createPolymarketCategoriesHandler
+} from './routes/polymarketRoutes';
+import { L } from './logger';
 
 dotenv.config();
 
 const app = express();
+const httpServer = http.createServer(app);
 const PORT = process.env.PORT || 3001;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/t2r4';
 const POLYMARKET_API_BASE =
   process.env.POLYMARKET_API_BASE || 'https://gamma-api.polymarket.com';
 
+const polymarketAuthConfig = resolvePolymarketAuthConfig();
+
 const polymarketService = new PolymarketService({
   baseURL: POLYMARKET_API_BASE,
-  auth: resolvePolymarketAuthConfig()
+  auth: polymarketAuthConfig
 });
 
 // Connect to MongoDB unless explicitly skipped (e.g., during tests)
 if (process.env.NODE_ENV !== 'test') {
   mongoose.connect(MONGODB_URI)
     .then(() => {
-      console.log('✅ Connected to MongoDB');
+      L.info('✅ Connected to MongoDB');
     })
     .catch((error) => {
-      console.error('❌ MongoDB connection error:', error);
+      L.error('❌ MongoDB connection error:', error);
     });
 }
 
@@ -96,15 +106,32 @@ app.post('/api/market', async (req, res) => {
 });
 
 app.get('/api/polymarket/markets', createPolymarketMarketsHandler(polymarketService));
+app.get('/api/polymarket/top-markets', createTopTradeableMarketsHandler(polymarketService));
+app.get(
+  '/api/polymarket/markets/:marketId/trades',
+  createMarketTradesHandler(polymarketService)
+);
+app.get('/api/polymarket/trades', createMarketTradesHandler(polymarketService));
+app.get('/api/polymarket/categories', createPolymarketCategoriesHandler(polymarketService));
 
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`🚀 T2R4 Server running on port ${PORT}`);
-    console.log(`📊 Tech Stack: Node.js + Express + MongoDB`);
+  httpServer.listen(PORT, async () => {
+    L.info(`🚀 T2R4 Server running on port ${PORT}`);
+    L.info(`📊 Tech Stack: Node.js + Express + MongoDB`);
   });
+
+  const shutdown = () => {
+    httpServer.close(() => {
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 export default app;
+export { httpServer };
 
 function resolvePolymarketAuthConfig(): PolymarketServiceAuthConfig | undefined {
   const apiKey = getEnvValue([
