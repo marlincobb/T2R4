@@ -1,0 +1,243 @@
+//@version=6
+indicator("Previous Day OHLC + Weighted Pivot + Range Sum", overlay=true)
+import SpyGate/kv/2 as kv
+
+// Define parameters
+xxDay = input.int(13, title="Moving Average Length")  // Length of the moving average
+// --- Input Parameters ---
+lookback       = input.int(13, title="Lookback Period for Market Profile", minval=1)
+bb_length      = input.int(13, title="Bollinger Bands Length", minval=1)
+bb_mult1       = input.float(1.0, title="BB Multiplier 1")
+bb_mult2       = input.float(2.0, title="BB Multiplier 2")
+mp_resolution  = input.timeframe("D", title="Market Profile Resolution")
+textColorInput = input.color(color.white, title="Table Text Color")
+// Inputs for target hour and minute
+target_hour   = input.int(7,  title="Target Hour (0-23)")
+target_minute = input.int(45,  title="Target Minute (0-59)")
+enableLines = input.bool(false, title="Enable Lines and Labels")
+
+
+// ------------------------------
+// Get Current Bar Time in Specified Timezone
+// ------------------------------
+timezone = "America/New_York"
+current_hour = hour(time, timezone)
+current_minute = minute(time, timezone)
+current_time = current_hour * 60 + current_minute
+
+is_target_time = (current_hour == target_hour and current_minute == target_minute)
+
+// ------------------------------
+// Define Session Times in Minutes
+// ------------------------------
+regular_start = 9 * 60 + 30    // 09:30 AM
+regular_end = 16 * 60          // 04:00 PM
+cleanup_start = 16 * 60        // 04:00 PM
+cleanup_end = 17 * 60          // 05:00 PM
+globex_start = 18 * 60         // 06:00 PM
+globex_end = 9 * 60 + 30       // 09:30 AM
+
+// ------------------------------
+// Determine Current Session
+// ------------------------------
+is_regular = (current_time >= regular_start) and (current_time < regular_end)
+is_cleanup = (current_time >= cleanup_start) and (current_time < cleanup_end)
+is_globex = (current_time >= globex_start) or (current_time < globex_end)
+current_session = is_regular ? "Regular" : is_cleanup ? "Cleanup" : is_globex ? "Globex" : "Other"
+
+is_new_trading_day = is_globex and not is_globex[1]
+
+// ------------------------------
+// Detect New Session Start
+// ------------------------------
+is_regular_session_open = is_regular and not is_regular[1]
+//is_regular_session_close = not is_regular and is_regular[1]
+is_regular_session_close = is_regular and (current_time == regular_end - 1)
+
+is_cleanup_session_open =  is_cleanup and not is_cleanup[1]
+//is_cleanup_session_close =  (current_time >= cleanup_end) and is_cleanup[1]
+is_cleanup_session_close = is_cleanup and (current_time == cleanup_end - 1)
+
+is_globex_session_open = is_globex and not is_globex[1]
+//is_globex_session_close = not is_globex and is_globex[1]
+is_globex_session_close = is_globex and (current_time == globex_end - 1)
+
+// Function to round a number to the nearest mintick
+roundToMintick(_number) =>
+    math.round(_number / syminfo.mintick) * syminfo.mintick
+
+calc_pivot_levels(d_pivot, drange) =>
+    r1 = roundToMintick(drange * 0.33 + d_pivot)
+    r2 = roundToMintick(drange * 0.66 + d_pivot)
+    r3 = roundToMintick(drange * 1.33 + d_pivot)
+    s1 = roundToMintick(d_pivot - (drange * 0.33))
+    s2 = roundToMintick(d_pivot - (drange * 0.66))
+    s3 = roundToMintick(d_pivot - (drange * 1.33))
+    pr = roundToMintick(drange * 0.17) + d_pivot
+    ps = roundToMintick(d_pivot - (drange * 0.17))
+    [r1, r2, r3, s1, s2, s3, pr, ps]
+
+// Function to calculate Bollinger bands
+calc_bollinger(avg, length, mult) =>
+    basis = ta.sma(avg, length)
+    dev = ta.stdev(avg, length)
+    upperBand = basis + mult * dev
+    lowerBand = basis - mult * dev
+    [upperBand, lowerBand, basis]
+
+
+
+// Fetch 1-minute data
+minute_high = request.security(syminfo.tickerid, "1", high, gaps=barmerge.gaps_off)
+minute_low = request.security(syminfo.tickerid, "1", low, gaps=barmerge.gaps_off)
+minute_close = request.security(syminfo.tickerid, "1", close, gaps=barmerge.gaps_off)
+minute_volume = request.security(syminfo.tickerid, "1", volume, gaps=barmerge.gaps_off)
+
+// Detect if the bar belongs to today
+isToday = year(time("D")) == year(timenow) and month(time("D")) == month(timenow) and dayofmonth(time("D")) == dayofmonth(timenow)
+
+// Calculate the average price for 1-minute bars of today
+minute_avg_price_today = (minute_high + minute_low + minute_close) / 3
+
+// Filter today's data
+price_today = isToday ? minute_avg_price_today : na
+volume_today = isToday ? minute_volume : na
+
+// Initialize POC, VAL, and VAH
+var float POC = na
+var float VAL = na
+var float VAH = na
+var float pv = na
+var float l = na
+var float h = na
+
+// Define lookback period for standard deviation (e.g., full trading session: 390 minutes)
+lookback_period = 390
+
+// Calculate POC, VAL, and VAH at the end of today
+isNewDay = not na(ta.change(time("D")))  // Ensure it evaluates to a bool
+
+//if  isNewDay
+//    [POC, VAL, VAH] = calc_market_profile(price_today, volume_today, lookback_period)
+//    pv := POC
+//    l := VAL
+//    h := VAH
+
+
+// Add labels for POC, VAL, and VAH
+//plotshape(POC, title="POC", location=location.absolute, color=color.new(color.yellow, 100), style=shape.labeldown, text="POC", textcolor=color.black, size=size.tiny, show_last=1)
+//plotshape(VAL, title="VAL", location=location.absolute, color=color.new(color.yellow, 100), style=shape.labeldown, text="VAL", textcolor=color.black, size=size.tiny, show_last=1)
+//plotshape(VAH, title="VAH", location=location.absolute, color=color.new(color.yellow, 100), style=shape.labeldown, text="VAH", textcolor=color.black, size=size.tiny, show_last=1)
+
+// Get the previous day's OHLC data
+[prevOpen, prevHigh, prevLow, prevClose] = request.security(syminfo.tickerid, "D", [open[1], high[1], low[1], close[1]], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+
+// Calculate the weighted pivot point where close is weighted by 3
+weightedPivotPoint = (prevHigh + prevLow + prevClose * 3) / 5
+
+// Fetch high and low for the last 4 days in a single call
+[high1, high2, high3, high4] = request.security(syminfo.tickerid, "D", [high[1], high[2], high[3], high[4]], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+[low1, low2, low3, low4] = request.security(syminfo.tickerid, "D", [low[1], low[2], low[3], low[4]], lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+
+// Calculate the sum of the range (High - Low) over the last 4 days
+rangeSum = (high1 - low1) + (high2 - low2) + (high3 - low3) + (high4 - low4)
+
+// Calculate pivot levels
+[r1, r2, r3, s1, s2, s3, pr, ps] = calc_pivot_levels(weightedPivotPoint, rangeSum)
+
+// Fetch daily high, low, and close for the last `xxDay` days in a single call
+highs = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on, gaps=barmerge.gaps_off)
+lows = request.security(syminfo.tickerid, "D", low[1], lookahead =barmerge.lookahead_on, gaps=barmerge.gaps_off)
+closes = request.security(syminfo.tickerid, "D", close[1], lookahead =barmerge.lookahead_on, gaps=barmerge.gaps_off)
+
+/// Calculate the xxDay moving average using daily averages
+[ubb1, lbb1, basis1] = request.security(syminfo.tickerid, "D",calc_bollinger((high[1] + low[1] + close[1]) / 3, xxDay, 1.0),lookahead=barmerge.lookahead_on)
+[ubb2, lbb2, basis2] = request.security(syminfo.tickerid, "D",calc_bollinger((high[1] + low[1] + close[1]) / 3, xxDay, 2.0),lookahead=barmerge.lookahead_on)
+mavg = request.security(syminfo.tickerid, "D", ta.sma((high[1] + low[1] + close[1]) / 3, xxDay), lookahead=barmerge.lookahead_on)
+
+
+// Extend lines across the entire chart, starting from the first visible candle
+if enableLines and barstate.islast
+    // your line.new() and label.new() code here
+
+    // Calculate the first visible bar index
+    var int first_visible_bar = bar_index[60]
+
+    // Draw lines starting from the first visible bar and extend to the right
+    line_pv = line.new(x1=first_visible_bar, y1=pv, x2=bar_index, y2=pv, color=color.orange, width=1, style=line.style_solid, extend=extend.right)
+    line_l = line.new(x1=first_visible_bar, y1=l, x2=bar_index, y2=l, color=color.green, width=1, style=line.style_solid, extend=extend.right)
+    line_h = line.new(x1=first_visible_bar, y1=h, x2=bar_index, y2=h, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+    line_prevOpen = line.new(x1=first_visible_bar, y1=prevOpen, x2=bar_index, y2=prevOpen, color=#4cafa2, width=1, style=line.style_dotted, extend=extend.right)
+    line_prevHigh = line.new(x1=first_visible_bar, y1=prevHigh, x2=bar_index, y2=prevHigh, color=#58ff52, width=1, style=line.style_dotted, extend=extend.right)
+    line_prevLow = line.new(x1=first_visible_bar, y1=prevLow, x2=bar_index, y2=prevLow, color=color.rgb(231, 27, 112), width=1, style=line.style_dotted, extend=extend.right)
+    line_prevClose = line.new(x1=first_visible_bar, y1=prevClose, x2=bar_index, y2=prevClose, color=color.orange, width=1, style=line.style_dotted, extend=extend.right)
+    line_weightedPivotPoint = line.new(x1=first_visible_bar, y1=weightedPivotPoint, x2=bar_index, y2=weightedPivotPoint, color=color.yellow, width=1, style=line.style_solid, extend=extend.right)
+    line_pr = line.new(x1=first_visible_bar, y1=pr, x2=bar_index, y2=pr, color=color.green, width=1, style=line.style_solid, extend=extend.right)
+    line_ps = line.new(x1=first_visible_bar, y1=ps, x2=bar_index, y2=ps, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+    line_r1 = line.new(x1=first_visible_bar, y1=r1, x2=bar_index, y2=r1, color=color.green, width=1, style=line.style_solid, extend=extend.right)
+    line_r2 = line.new(x1=first_visible_bar, y1=r2, x2=bar_index, y2=r2, color=color.green, width=1, style=line.style_solid, extend=extend.right)
+    line_r3 = line.new(x1=first_visible_bar, y1=r3, x2=bar_index, y2=r3, color=color.green, width=1, style=line.style_solid, extend=extend.right)
+    line_s1 = line.new(x1=first_visible_bar, y1=s1, x2=bar_index, y2=s1, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+    line_s2 = line.new(x1=first_visible_bar, y1=s2, x2=bar_index, y2=s2, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+    line_s3 = line.new(x1=first_visible_bar, y1=s3, x2=bar_index, y2=s3, color=color.red, width=1, style=line.style_solid, extend=extend.right)
+    line_ubb1 = line.new(x1=first_visible_bar, y1=ubb1, x2=bar_index, y2=ubb1, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+    line_ubb2 = line.new(x1=first_visible_bar, y1=ubb2, x2=bar_index, y2=ubb2, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+    line_lbb1 = line.new(x1=first_visible_bar, y1=lbb1, x2=bar_index, y2=lbb1, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+    line_lbb2 = line.new(x1=first_visible_bar, y1=lbb2, x2=bar_index, y2=lbb2, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+    line_mavg = line.new(x1=first_visible_bar, y1=mavg, x2=bar_index, y2=mavg, color=color.white, width=1, style=line.style_dashed, extend=extend.right)
+
+   
+
+    label.new(x=bar_index + 1, y=pv, text="c-"+str.tostring(roundToMintick(pv)), color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=l, text="l-"+str.tostring(l), color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=h, text="h-"+str.tostring(h), color=color.red, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=prevOpen, text="pO-"+str.tostring(prevOpen), color=#4cafa2, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=prevHigh, text="pH-"+str.tostring(prevHigh), color=color.rgb(3, 28, 2, 20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=prevLow, text="pL-"+str.tostring(prevLow), color=color.rgb(231, 27, 112), textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=prevClose, text="pC-"+str.tostring(prevClose), color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=r1, text="r1-"+str.tostring(roundToMintick(r1)), color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=r2, text="r2-"+str.tostring(roundToMintick(r2)), color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=r3, text="r3-"+str.tostring(roundToMintick(r3)), color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=s1, text="s1-"+str.tostring(roundToMintick(s1)), color=color.red, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=s2, text="s2r-"+str.tostring(roundToMintick(s2)), color=color.red, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=s3, text="s3r-"+str.tostring(roundToMintick(s3)), color=color.red, textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=ubb1, text="ubb1-"+str.tostring(roundToMintick(ubb1)), color=color.white, textcolor=color.black, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=ubb2, text="ubb2-"+str.tostring(roundToMintick(ubb2)), color=color.white, textcolor=color.black, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=lbb1, text="lbb1-"+str.tostring(roundToMintick(lbb1)), color=color.white, textcolor=color.black, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=lbb2, text="lbb2-"+str.tostring(roundToMintick(lbb2)), color=color.white, textcolor=color.black, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=mavg, text="mavg-"+str.tostring(roundToMintick(mavg)), color=color.white, textcolor=color.black, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=pr, text="pr-"+str.tostring(roundToMintick(pr)), color=color.yellow, textcolor=#330d0d, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=ps, text="ps-"+str.tostring(roundToMintick(ps)), color=color.yellow, textcolor=#330d0d, style=label.style_label_left, size=size.small)
+    label.new(x=bar_index + 1, y=weightedPivotPoint, text="wPv-"+str.tostring(roundToMintick(weightedPivotPoint)), color=color.yellow, textcolor=#330d0d, style=label.style_label_left, size=size.small)
+
+    
+
+minute_of_hour = minute(time, "America/New_York")
+hour_of_day = hour(time, "America/New_York")
+
+
+if is_target_time
+    alert_json_daily_levels = '{"source":"BTS-LEVELS-DAILY", "event":"daily",'
+     + kv.s("symbol", syminfo.ticker)
+     + kv.n("time", time[1])
+     + kv.n("pO", roundToMintick(prevOpen))
+     + kv.n("pH", roundToMintick(prevHigh))
+     + kv.n("pL", roundToMintick(prevLow))
+     + kv.n("pC", roundToMintick(prevClose))
+     + kv.n("r1", roundToMintick(r1))
+     + kv.n("r2", roundToMintick(r2))
+     + kv.n("r3", roundToMintick(r3))
+     + kv.n("s1", roundToMintick(s1))
+     + kv.n("s2r", roundToMintick(s2))
+     + kv.n("s3r", roundToMintick(s3))
+     + kv.n("ubb1", roundToMintick(ubb1))
+     + kv.n("ubb2", roundToMintick(ubb2))
+     + kv.n("lbb1", roundToMintick(lbb1))
+     + kv.n("lbb2", roundToMintick(lbb2))
+     + kv.n("mavg", roundToMintick(mavg))
+     + kv.n("pr", roundToMintick(pr))
+     + kv.n("ps", roundToMintick(ps))
+     + kv.n("wPv", roundToMintick(weightedPivotPoint), false)
+     + "}"
+
+    alert(alert_json_daily_levels, alert.freq_once_per_bar_close)

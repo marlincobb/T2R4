@@ -1,0 +1,831 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Dev Lucem
+
+//@version=6
+indicator("MTS-Session with 5-Day Volume Average Alerts", overlay=true)
+import SpyGate/kv/2 as kv
+
+
+// ------------------------------
+// Define Transparency Levels
+// ------------------------------
+yday_transp = 50    // Less transparent (darker) for Y'Day cells
+today_transp = 80   // More transparent (lighter) for Today cells
+
+// ------------------------------
+// Define Timezone
+// ------------------------------
+timezone = "America/New_York"
+
+// ------------------------------
+// User Input for Lookback Period
+// ------------------------------
+lookback_days = input.int(title="Number of Historical Days to Track", defval=5, minval=1, maxval=30)
+
+// ------------------------------
+// Define a Struct for OHLCV Data
+// ------------------------------
+type OHLCV
+    float open
+    float high
+    float low
+    float close
+    float volume
+
+// ------------------------------
+// Initialize Arrays to Store Historical Data for Each Session
+// ------------------------------
+var array<OHLCV> globex_history = array.new<OHLCV>()
+var array<OHLCV> regular_history = array.new<OHLCV>()
+var array<OHLCV> cleanup_history = array.new<OHLCV>()
+
+// ------------------------------
+// Function to Update Historical Data Arrays
+// ------------------------------
+f_update_history(_history, _open, _high, _low, _close, _volume) =>
+    // Create a new OHLCV struct with the latest data
+    new_entry = OHLCV.new(_open, _high, _low, _close, _volume)
+    // Append the new entry to the history array
+    array.push(_history, new_entry)
+    // Ensure the history does not exceed the lookback period
+    if array.size(_history) > lookback_days
+        array.shift(_history)
+
+// ------------------------------
+// Function to Calculate Average Volume
+// ------------------------------
+f_avg_volume(_history) =>
+    sum_vol = 0.0
+    count = 0
+    for i = 0 to array.size(_history) - 1
+        entry = array.get(_history, i)
+        if not na(entry.volume)
+            sum_vol += entry.volume
+            count += 1
+    avg_vol = count > 0 ? sum_vol / count : na 
+    avg_vol
+
+// ------------------------------
+// Function to Calculate Percentage Difference
+// ------------------------------
+f_pct_diff(_current_volume, _avg_volume) =>
+    not na(_current_volume) and not na(_avg_volume) and _avg_volume != 0 ? ((_current_volume - _avg_volume) / _avg_volume) * 100 : na
+
+// ------------------------------
+// Get Current Bar Time in Specified Timezone
+// ------------------------------
+current_hour = hour(time, timezone)
+current_minute = minute(time, timezone)
+current_time = current_hour * 60 + current_minute
+
+// ------------------------------
+// Define Session Times in Minutes
+// ------------------------------
+regular_start = 9 * 60 + 30    // 09:30 AM
+regular_end = 16 * 60          // 04:00 PM
+cleanup_start = 16 * 60        // 04:00 PM
+cleanup_end = 17 * 60          // 05:00 PM
+globex_start = 18 * 60         // 06:00 PM
+globex_end = 9 * 60 + 30       // 09:30 AM
+
+// ------------------------------
+// Determine Current Session
+// ------------------------------
+is_regular = (current_time >= regular_start) and (current_time < regular_end)
+is_cleanup = (current_time >= cleanup_start) and (current_time < cleanup_end)
+is_globex = (current_time >= globex_start) or (current_time < globex_end)
+current_session = is_regular ? "Regular" : is_cleanup ? "Cleanup" : is_globex ? "Globex" : "Other"
+
+is_new_trading_day = is_globex and not is_globex[1]
+
+// ------------------------------
+// Detect New Session Start
+// ------------------------------
+is_regular_session_open = is_regular and not is_regular[1]
+//is_regular_session_close = not is_regular and is_regular[1]
+is_regular_session_close = is_regular and (current_time == regular_end - 1)
+
+is_cleanup_session_open =  is_cleanup and not is_cleanup[1]
+//is_cleanup_session_close =  (current_time >= cleanup_end) and is_cleanup[1]
+is_cleanup_session_close = is_cleanup and (current_time == cleanup_end - 1)
+
+is_globex_session_open = is_globex and not is_globex[1]
+//is_globex_session_close = not is_globex and is_globex[1]
+is_globex_session_close = is_globex and (current_time == globex_end - 1)
+
+var float current_day_volume = 0
+var float previous_day_volume = 0
+
+// ------------------------------
+// Initialize Volume Accumulators and OHLC Variables
+// ------------------------------
+// Previous session  Variables
+var float previous_regular_session_volume = 0.0
+var float previous_cleanup_session_volume = 0.0
+var float previous_globex_session_volume = 0.0
+
+var float previous_regular_session_open = na
+var float previous_regular_session_high = na
+var float previous_regular_session_low = na
+var float previous_regular_session_close = na
+
+var float previous_cleanup_session_open = na
+var float previous_cleanup_session_high = na
+var float previous_cleanup_session_low = na
+var float previous_cleanup_session_close = na
+
+var float previous_globex_session_open = na
+var float previous_globex_session_high = na
+var float previous_globex_session_low = na
+var float previous_globex_session_close = na
+
+// Current Day Variables
+var float current_regular_session_volume = 0.0
+var float current_cleanup_session_volume = 0.0
+var float current_globex_session_volume = 0.0
+
+var float current_regular_session_open = na
+var float current_regular_session_high = na
+var float current_regular_session_low = na
+var float current_regular_session_close = na
+
+var float current_cleanup_session_open = na
+var float current_cleanup_session_high = na
+var float current_cleanup_session_low = na
+var float current_cleanup_session_close = na
+
+var float current_globex_session_open = na
+var float current_globex_session_high = na
+var float current_globex_session_low = na
+var float current_globex_session_close = na
+// -------------------
+// 2Days ago data
+// -------------------
+
+float d2_cash_open = na
+float d2_cash_high = na
+float d2_cash_low = na
+float d2_cash_close = na
+float d2_cash_volume = na
+
+
+// Initialize d2_cash_close and retain its value if no new update is required
+if is_globex_session_open
+    d2_cash_open := previous_regular_session_open
+    d2_cash_high := previous_regular_session_high
+    d2_cash_low := previous_regular_session_low
+    d2_cash_close := previous_regular_session_close  // Set to previous regular session close
+    d2_cash_volume := previous_regular_session_volume
+else
+    d2_cash_close := na(d2_cash_close) ? d2_cash_close[1] : d2_cash_close  // Retain previous value if not updated  
+
+
+// ------------------------------
+// Reset Accumulators and OHLC Variables at New Trading Day Start
+// ------------------------------
+
+if is_globex_session_open    
+
+    previous_globex_session_open := current_globex_session_open
+    previous_globex_session_high := current_globex_session_high
+    previous_globex_session_low := current_globex_session_low
+    previous_globex_session_close := current_globex_session_close
+    previous_globex_session_volume := current_globex_session_volume
+
+    previous_regular_session_open := current_regular_session_open
+    previous_regular_session_high := current_regular_session_high
+    previous_regular_session_low := current_regular_session_low
+    previous_regular_session_close := current_regular_session_close
+    previous_regular_session_volume := current_regular_session_volume
+
+    previous_cleanup_session_open := current_cleanup_session_open
+    previous_cleanup_session_high := current_cleanup_session_high
+    previous_cleanup_session_low := current_cleanup_session_low
+    previous_cleanup_session_close := current_cleanup_session_close
+    previous_cleanup_session_volume := current_cleanup_session_volume
+    previous_day_volume := current_day_volume
+    // Update historical data arrays with the previous day's data
+    f_update_history(globex_history, previous_globex_session_open, previous_globex_session_high, previous_globex_session_low, previous_globex_session_close, previous_globex_session_volume)
+    f_update_history(regular_history, previous_regular_session_open, previous_regular_session_high, previous_regular_session_low, previous_regular_session_close, previous_regular_session_volume)
+    f_update_history(cleanup_history, previous_cleanup_session_open, previous_cleanup_session_high, previous_cleanup_session_low, previous_cleanup_session_close, previous_cleanup_session_volume)
+    
+    // Reset current day's session variables
+    current_regular_session_open := na
+    current_regular_session_high := na
+    current_regular_session_low := na
+    current_regular_session_close := na
+    current_regular_session_volume := 0.0
+
+    current_cleanup_session_open := na
+    current_cleanup_session_high := na
+    current_cleanup_session_low := na
+    current_cleanup_session_close := na
+    current_cleanup_session_volume := 0.0
+
+    current_globex_session_open := na
+    current_globex_session_high := na
+    current_globex_session_low := na
+    current_globex_session_close := na
+    current_globex_session_volume := 0.0 
+
+// Initialize current session OHLC on new session start
+if is_regular_session_open
+    current_regular_session_open := open
+
+if is_cleanup_session_open
+    current_cleanup_session_open := open
+
+if is_globex_session_open
+    current_globex_session_open := open
+    current_day_volume := 0
+
+// ------------------------------
+// Accumulate Volume and Update OHLC Based on Session
+// ------------------------------
+if is_regular
+    current_regular_session_high := na(current_regular_session_high) ? high : math.max(current_regular_session_high, high)
+    current_regular_session_low := na(current_regular_session_low) ? low : math.min(current_regular_session_low, low)
+    current_regular_session_close := close
+    current_regular_session_volume += volume
+
+if is_cleanup
+    current_cleanup_session_high := na(current_cleanup_session_high) ? high : math.max(current_cleanup_session_high, high)
+    current_cleanup_session_low := na(current_cleanup_session_low) ? low : math.min(current_cleanup_session_low, low)
+    current_cleanup_session_close := close
+    current_cleanup_session_volume += volume
+
+if is_globex
+    current_globex_session_high := na(current_globex_session_high) ? high : math.max(current_globex_session_high, high)
+    current_globex_session_low := na(current_globex_session_low) ? low : math.min(current_globex_session_low, low)
+    current_globex_session_close := close
+    current_globex_session_volume += volume
+
+
+// ------------------------------
+// Total Volume Calculation
+// ------------------------------
+current_day_volume := current_day_volume + volume
+
+// ------------------------------
+// Define Sessions, Colors, and Headers
+// ------------------------------
+var string[] sessions = array.from("Globex", "Regular", "Cleanup", "FULL")
+bgcolor_regular = input.color(color.green, title="Regular Session Background Color")
+bgcolor_cleanup = input.color(color.gray, title="Cleanup Session Background Color")
+bgcolor_globex = input.color(color.red, title="Globex Session Background Color")
+bgcolor_full = input.color(color.navy, title="Full Session Background Color")
+bgcolors_table_enabled = input.bool(true, title="Enable Table Background Colors")
+bgcolors_chart_enabled = input.bool(true, title="Enable Chart Background Colors")
+
+var color[] bgcolors = array.from(bgcolor_globex, bgcolor_regular, bgcolor_cleanup, bgcolor_full)
+
+// ------------------------------
+// Combined Headers using Single-Line Array.from
+// ------------------------------
+var string[] headersCombined = array.from("Y'Day", "O", "H", "L", "C", "O-C", "O-C%", "$C-C", "$C-C%", "V", "Today", "O", "H", "L", "C", "O-C", "O-C%", "$C-C", "$C-C%", "V")
+
+// ------------------------------
+// Plot Background Colors to Highlight Session
+// ------------------------------
+bgcolor(is_globex and bgcolors_chart_enabled ? color.new(bgcolor_globex, 90) : na, title="Globex Session")
+bgcolor(is_regular and bgcolors_chart_enabled ? color.new(bgcolor_regular, 90) : na, title="Regular Session")
+bgcolor(is_cleanup and bgcolors_chart_enabled ? color.new(bgcolor_cleanup, 90) : na, title="Cleanup Session")
+
+// ------------------------------
+// Alert Conditions for Session Open and Close
+// ------------------------------
+
+// Define common fields for all alerts
+symbol = syminfo.ticker // Use syminfo.tickerid for unique identifier
+interval = timeframe.period
+
+// ------------------------------
+// Display Volume and OHLC in a Combined Table
+// ------------------------------
+
+// Create a single table with enough columns to accommodate both Yesterday and Today data
+// Total columns: 20
+var table combinedTable = table.new(position.top_right, 20, array.size(sessions) + 1, border_color=color.black, frame_color=color.black, frame_width=1)
+
+
+// ------------------------------
+// Update Table Headers and Data
+// ------------------------------
+if barstate.islast
+    // Clear existing table starting from row 0 and column 0
+    table.clear(combinedTable,0,0)
+    
+    // Populate headers
+    for col = 0 to array.size(headersCombined) - 1
+        header = array.get(headersCombined, col)
+        table.cell(combinedTable, col, 0, header, text_color=color.white, bgcolor=color.blue, text_halign=text.align_center)
+    
+    // Populate rows for each session
+    for i = 0 to array.size(sessions) - 1
+        session_name = array.get(sessions, i)
+        bgcolor_row = bgcolors_table_enabled ? array.get(bgcolors, i) : na
+      
+        // -------------------
+        // Yesterday's Data
+        // -------------------
+        float y_open = na
+        float y_high = na
+        float y_low = na
+        float y_close = na
+        float y_volume = 0.0
+        float y_o_c = na
+        float y_o_c_pct = na
+        float dc_c = na
+        float dc_c_pct = na
+
+        if i == 0  // (Globex Session)
+            y_open := previous_globex_session_open
+            y_high := previous_globex_session_high
+            y_low := previous_globex_session_low
+            y_close := previous_globex_session_close
+            y_volume := previous_globex_session_volume
+            y_o_c := previous_globex_session_close - previous_globex_session_open
+            y_o_c_pct := 100 * y_o_c/previous_globex_session_open
+            dc_c :=  previous_globex_session_close - d2_cash_close
+            dc_c_pct := 100 * dc_c /d2_cash_close
+        
+        else if i == 1 // (regular session )
+            y_open := previous_regular_session_open
+            y_high := previous_regular_session_high
+            y_low := previous_regular_session_low
+            y_close := previous_regular_session_close
+            y_volume := previous_regular_session_volume
+            y_o_c := previous_regular_session_close - previous_regular_session_open
+            y_o_c_pct := 100 * y_o_c/previous_regular_session_open
+            dc_c := previous_regular_session_close - d2_cash_close 
+            dc_c_pct := 100 * dc_c /  d2_cash_close
+            
+        else if i == 2 // cleanup 
+            y_open := previous_cleanup_session_open
+            y_high := previous_cleanup_session_high
+            y_low := previous_cleanup_session_low
+            y_close := previous_cleanup_session_close
+            y_volume := previous_cleanup_session_volume
+            y_o_c := previous_cleanup_session_close - previous_cleanup_session_open
+            y_o_c_pct := 100 * y_o_c/previous_cleanup_session_open
+            dc_c := previous_cleanup_session_close - d2_cash_close
+            dc_c_pct := 100 * dc_c / d2_cash_close
+            
+        else if i == 3 // ((Total)
+            y_open := previous_globex_session_open
+            y_high := math.max(previous_globex_session_high, previous_regular_session_high, previous_cleanup_session_high)
+            y_low := math.min(previous_globex_session_low, previous_regular_session_low, previous_cleanup_session_low)
+            y_close := previous_cleanup_session_close
+            y_volume := previous_day_volume
+            y_o_c := previous_cleanup_session_close - previous_globex_session_open
+            y_o_c_pct := 100* y_o_c/previous_globex_session_open
+            dc_c := previous_regular_session_close - d2_cash_close
+            dc_c_pct := 100 * dc_c / d2_cash_close
+
+        // -------------------
+        // Today's Data
+        // -------------------
+        float t_open = na
+        float t_high = na
+        float t_low = na
+        float t_close = na
+        float t_volume = 0.0
+        float t_o_c = 0
+        float t_o_c_pct = 0
+        float t_dc_c = 0
+        float t_dc_c_pct = 0
+
+        if i == 0 //globex)
+            t_open := current_globex_session_open
+            t_high := current_globex_session_high
+            t_low := current_globex_session_low
+            t_close := current_globex_session_close
+            t_volume := current_globex_session_volume
+            t_o_c := current_globex_session_close - current_globex_session_open
+            t_o_c_pct := 100 * t_o_c/current_globex_session_open
+            t_dc_c :=  current_globex_session_close - previous_regular_session_close 
+            t_dc_c_pct := 100 * t_dc_c / previous_regular_session_close
+
+            
+        else if i == 1 // regular session
+            t_open := current_regular_session_open
+            t_high := current_regular_session_high
+            t_low := current_regular_session_low
+            t_close := current_regular_session_close
+            t_volume := current_regular_session_volume
+            t_o_c := current_regular_session_close - current_regular_session_open
+            t_o_c_pct := 100 * t_o_c/current_regular_session_open
+            t_dc_c :=current_regular_session_close -  previous_regular_session_close 
+            t_dc_c_pct := 100 * t_dc_c / previous_regular_session_close
+    
+        else if i == 2 // cleanup 
+            t_open := current_cleanup_session_open
+            t_high := current_cleanup_session_high
+            t_low := current_cleanup_session_low
+            t_close := current_cleanup_session_close
+            t_volume := current_cleanup_session_volume
+            t_o_c := current_cleanup_session_close - current_cleanup_session_open
+            t_o_c_pct := 100 * t_o_c/current_cleanup_session_open
+            t_dc_c := current_cleanup_session_close- previous_regular_session_close 
+            t_dc_c_pct := 100 * t_dc_c / previous_regular_session_close
+        
+    
+        else if i == 3 // total
+            t_open := current_globex_session_open
+            t_high := math.max(current_globex_session_high, current_regular_session_high, current_cleanup_session_high)
+            t_low := math.min(current_globex_session_low, current_regular_session_low, current_cleanup_session_low)
+            t_close := current_cleanup_session_close
+            t_volume := current_day_volume
+            t_o_c := current_cleanup_session_close - current_globex_session_open
+            t_o_c_pct := 100 * t_o_c/current_globex_session_open
+            t_dc_c := current_cleanup_session_close - previous_regular_session_close
+            t_dc_c_pct :=100 *  t_dc_c / current_cleanup_session_close
+
+
+        // -------------------
+        // Populate Table Cells
+        // -------------------
+        // Y'Day Session Column (Column 0)
+        table.cell(combinedTable, 0, i + 1, session_name, text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_left)
+        
+        // Yesterday's Data
+        table.cell(combinedTable, 1, i + 1, na(y_open) ? "" : str.tostring(y_open, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 2, i + 1, na(y_high) ? "" : str.tostring(y_high, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 3, i + 1, na(y_low) ? "" : str.tostring(y_low, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 4, i + 1, na(y_close) ? "" : str.tostring(y_close, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        
+        // O-C & O-C%
+        table.cell(combinedTable, 5, i + 1, na(y_o_c) ? "" : str.tostring(y_o_c, "0.00"), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+//        table.cell(combinedTable, 5, i + 1, na(y_o_c) ? "" : str.tostring(d2_cash_close, "0.00"), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 6, i + 1, na(y_o_c_pct) ? "" : str.tostring(y_o_c_pct, "0.00") + "%", text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        // O-C & O-C%
+        table.cell(combinedTable, 7, i + 1, na(dc_c) ? "" : str.tostring(dc_c, "0.00"), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 8, i + 1, na(dc_c_pct) ? "" : str.tostring(dc_c_pct, "0.00") + "%", text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+        
+        // Y'Day Volume
+        table.cell(combinedTable, 9, i + 1, na(y_volume) ? "" : str.tostring(y_volume, "#,###"), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, yday_transp), text_halign=text.align_right)
+
+        // Today Session Column (Column 8)
+        table.cell(combinedTable, 10, i + 1, session_name, text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_left)
+        
+        // Today's Data
+        table.cell(combinedTable, 11, i + 1, na(t_open) ? "" : str.tostring(t_open, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 12, i + 1, na(t_high) ? "" : str.tostring(t_high, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 13, i + 1, na(t_low) ? "" : str.tostring(t_low, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 14, i + 1, na(t_close) ? "" : str.tostring(t_close, format.mintick), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        
+        // O-C & O-C%
+        table.cell(combinedTable, 15, i + 1, na(t_o_c) ? "" : str.tostring(t_o_c, "0.00"), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 16, i + 1, na(t_o_c_pct) ? "" : str.tostring(t_o_c_pct, "0.00") + "%", text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        
+        // Yesterday's Close-YC and % Change YC
+        table.cell(combinedTable, 17, i + 1, na(t_dc_c) ? "" : str.tostring(t_dc_c, "0.00"), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        table.cell(combinedTable, 18, i + 1, na(t_dc_c_pct) ? "" : str.tostring(t_dc_c_pct, "0.00") + "%", text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+        
+        // Today's Volume (Column 19)
+        table.cell(combinedTable, 19, i + 1, na(t_volume) ? "" : str.tostring(t_volume, "#,###"), text_color=color.white, bgcolor=na(bgcolor_row) ? na : color.new(bgcolor_row, today_transp), text_halign=text.align_right)
+    
+
+       
+        // Loop through each session row
+        for i = 0 to array.size(sessions) - 1
+            session_name = array.get(sessions, i)
+
+            // --- Recompute your Y'Day data for this session ---
+            float y_open   = na
+            float y_high   = na
+            float y_low    = na
+            float y_close  = na
+            float y_volume = na
+            float y_o_c    = na
+            float y_o_c_pct= na
+
+            if i == 0
+                y_open := previous_globex_session_open
+                y_high := previous_globex_session_high
+                y_low  := previous_globex_session_low
+                y_close:= previous_globex_session_close
+                y_volume:=previous_globex_session_volume
+                y_o_c   := y_close - y_open
+                y_o_c_pct:= (y_o_c / y_open) * 100.0
+            else if i == 1 // (regular session )
+                y_open := previous_regular_session_open
+                y_high := previous_regular_session_high
+                y_low := previous_regular_session_low
+                y_close := previous_regular_session_close
+                y_volume := previous_regular_session_volume
+                y_o_c := previous_regular_session_close - previous_regular_session_open
+                y_o_c_pct := 100 * y_o_c/previous_regular_session_open
+                dc_c := previous_regular_session_close - d2_cash_close 
+                dc_c_pct := 100 * dc_c /  d2_cash_close
+                
+            else if i == 2 // cleanup 
+                y_open := previous_cleanup_session_open
+                y_high := previous_cleanup_session_high
+                y_low := previous_cleanup_session_low
+                y_close := previous_cleanup_session_close
+                y_volume := previous_cleanup_session_volume
+                y_o_c := previous_cleanup_session_close - previous_cleanup_session_open
+                y_o_c_pct := 100 * y_o_c/previous_cleanup_session_open
+                dc_c := previous_cleanup_session_close - d2_cash_close
+                dc_c_pct := 100 * dc_c / d2_cash_close
+                
+            else if i == 3 // ((Total)
+                y_open := previous_globex_session_open
+                y_high := math.max(previous_globex_session_high, previous_regular_session_high, previous_cleanup_session_high)
+                y_low := math.min(previous_globex_session_low, previous_regular_session_low, previous_cleanup_session_low)
+                y_close := previous_cleanup_session_close
+                y_volume := previous_day_volume
+                y_o_c := previous_cleanup_session_close - previous_globex_session_open
+                y_o_c_pct := 100* y_o_c/previous_globex_session_open
+                dc_c := previous_regular_session_close - d2_cash_close
+                dc_c_pct := 100 * dc_c / d2_cash_close    
+
+            // --- Recompute your Today data for this session ---
+            float t_open   = na
+            float t_high   = na
+            float t_low    = na
+            float t_close  = na
+            float t_volume = na
+            float t_o_c    = na
+            float t_o_c_pct= na
+
+            if i == 0
+                t_open := current_globex_session_open
+                t_high := current_globex_session_high
+                t_low  := current_globex_session_low
+                t_close:= current_globex_session_close
+                t_volume:=current_globex_session_volume
+                t_o_c   := t_close - t_open
+                t_o_c_pct:= (t_o_c / t_open) * 100.0
+            
+            else if i == 1 // regular session
+                t_open := current_regular_session_open
+                t_high := current_regular_session_high
+                t_low := current_regular_session_low
+                t_close := current_regular_session_close
+                t_volume := current_regular_session_volume
+                t_o_c := current_regular_session_close - current_regular_session_open
+                t_o_c_pct := 100 * t_o_c/current_regular_session_open
+                t_dc_c :=current_regular_session_close -  previous_regular_session_close 
+                t_dc_c_pct := 100 * t_dc_c / previous_regular_session_close
+        
+            else if i == 2 // cleanup 
+                t_open := current_cleanup_session_open
+                t_high := current_cleanup_session_high
+                t_low := current_cleanup_session_low
+                t_close := current_cleanup_session_close
+                t_volume := current_cleanup_session_volume
+                t_o_c := current_cleanup_session_close - current_cleanup_session_open
+                t_o_c_pct := 100 * t_o_c/current_cleanup_session_open
+                t_dc_c := current_cleanup_session_close- previous_regular_session_close 
+                t_dc_c_pct := 100 * t_dc_c / previous_regular_session_close
+            
+        
+            else if i == 3 // total
+                t_open := current_globex_session_open
+                t_high := math.max(current_globex_session_high, current_regular_session_high, current_cleanup_session_high)
+                t_low := math.min(current_globex_session_low, current_regular_session_low, current_cleanup_session_low)
+                t_close := current_cleanup_session_close
+                t_volume := current_day_volume
+                t_o_c := current_cleanup_session_close - current_globex_session_open
+                t_o_c_pct := 100 * t_o_c/current_globex_session_open
+                t_dc_c := current_cleanup_session_close - previous_regular_session_close
+                t_dc_c_pct :=100 *  t_dc_c / current_cleanup_session_close
+            
+            // --- Build a JSON fragment for this row ---
+            // (Note: We’re using kv.* as in your code. If you need more fields, just keep adding kv.n / kv.s.)
+            string rowJson = '{'
+                 + kv.s("source","MTS-SESSION")
+                 + kv.s("event","table-row")
+                 + kv.s("session", session_name)
+                 + kv.s("symbol",symbol)
+                 + kv.n("y_open", y_open)
+                 + kv.n("y_high", y_high)
+                 + kv.n("y_low", y_low)
+                 + kv.n("y_close", y_close)
+                 + kv.n("y_volume", y_volume)
+                 + kv.n("t_open", t_open)
+                 + kv.n("t_high", t_high)
+                 + kv.n("t_low", t_low)
+                 + kv.n("t_close", t_close)
+                 + kv.n("t_volume", t_volume,false)
+                 + '}'
+            
+            //alert(rowJson, alert.freq_once_per_bar)
+
+
+// ------------------------------
+// Globex Session Open/Close
+// ------------------------------
+if is_globex_session_open
+    // Calculate 5-Day Average Volume for Globex Session
+    avg_globex_session_volume = f_avg_volume(globex_history)
+    // Calculate Percentage Difference
+    pct_diff_globex_volume = f_pct_diff(previous_globex_session_volume, avg_globex_session_volume)
+    
+    // Send close alert for "cleanup"
+    alert_json_open_globex = '{"source":"MTS-SESSION", "event":"globex-open",'
+     + kv.n("time",time[1]) 
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("open",current_globex_session_open)
+     + kv.n("close",current_globex_session_close)
+     + kv.n("high",current_globex_session_high)
+     + kv.n("low",current_globex_session_low)
+     + kv.n("prev_close",previous_regular_session_close)
+     + kv.n("volume",current_globex_session_volume,false)
+     + "}"
+    
+    alert(alert_json_open_globex, alert.freq_once_per_bar)
+
+if is_globex_session_close
+    alert_json_globex_close = '{"source":"MTS-SESSION", "event":"globex-close",'
+     + kv.n("time",time[1])
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("open",current_globex_session_open)
+     + kv.n("close",current_globex_session_close)
+     + kv.n("high",current_globex_session_high)
+     + kv.n("low",current_globex_session_low)
+     + kv.n("prev_close",previous_regular_session_close)
+     + kv.n("volume",current_globex_session_volume,false)
+     + "}"
+
+    alert(alert_json_globex_close, alert.freq_once_per_bar_close)
+
+// ------------------------------
+// Regular Session Open/close
+// ------------------------------
+if is_regular_session_open
+    // Calculate 5-Day Average Volume for Regular Session
+    avg_regular_session_volume = f_avg_volume(regular_history)
+    // Calculate Percentage Difference
+    pct_diff_regular_volume = f_pct_diff(previous_regular_session_volume, avg_regular_session_volume)
+    
+    // Send close alert for "globex"
+   
+
+    alert_json_open_regular = '{"source":"MTS-SESSION", "event":"regular-open", '
+     + kv.n("time",time)
+     + kv.s("symbol",symbol) 
+     + kv.s("interval",interval)
+     + kv.n("open",current_regular_session_open)
+     + kv.n("close",current_regular_session_close)
+     + kv.n("high",current_regular_session_high)
+     + kv.n("low",current_regular_session_low)
+     + kv.n("volume",current_regular_session_volume)
+     + kv.n("prev_close",previous_regular_session_close,false)
+     + '}'
+    alert(alert_json_open_regular, alert.freq_once_per_bar)
+
+if is_regular_session_close
+    alert_json_close_regular = '{"source":"MTS-SESSION", "event":"regular-close", '
+     + kv.n("time",time[1])
+     + kv.s("symbol",symbol) 
+     + kv.s("interval",interval)
+     + kv.n("close",current_regular_session_close)
+     + kv.n("high",current_regular_session_high)
+     + kv.n("low",current_regular_session_low)
+     + kv.n("open",current_regular_session_open)
+     + kv.n("volume",current_regular_session_volume)
+     + kv.n("prev_close",previous_regular_session_close,false)
+     
+     + '}'
+    alert(alert_json_close_regular, alert.freq_once_per_bar_close)
+
+
+// ------------------------------
+// Cleanup Session Open/close
+// ------------------------------
+if is_cleanup_session_open
+    // Calculate 5-Day Average Volume for Cleanup Session
+    avg_cleanup_session_volume = f_avg_volume(cleanup_history)
+    // Calculate Percentage Difference
+    pct_diff_cleanup_volume = f_pct_diff(previous_cleanup_session_volume, avg_cleanup_session_volume)
+    
+    // Send open alert for "cleanup" with 5-day average volume and percent difference
+    alert_json_open_cleanup = '{"source":"MTS-SESSION", "event":"cleanup-open",'
+     + kv.n("time",time)
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("open", current_cleanup_session_open)
+     + kv.n("close",current_cleanup_session_close)
+     + kv.n("high",current_cleanup_session_high)
+     + kv.n("low",current_cleanup_session_low)
+     + kv.n("volume",current_cleanup_session_volume)
+     + kv.n("prev_close",previous_regular_session_close,false)
+     + "}"
+    alert(alert_json_open_cleanup, alert.freq_once_per_bar)
+
+if is_cleanup_session_close
+ // Send open alert for "cleanup" with 5-day average volume and percent difference
+    alert_json_close_cleanup = '{"source":"MTS-SESSION", "event":"cleanup-close",'
+     + kv.n("time",time[1])
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("open", current_cleanup_session_open)
+     + kv.n("close",current_cleanup_session_close)
+     + kv.n("high",current_cleanup_session_high)
+     + kv.n("low",current_cleanup_session_low)
+     + kv.n("volume",current_cleanup_session_volume)
+     + kv.n("prev_close",previous_regular_session_close,false)
+     +"}"
+    alert(alert_json_close_cleanup, alert.freq_once_per_bar_close)
+    alert_json_close_fullday = '{"source":"MTS-SESSION", "event":"fullday-close",'
+     + kv.n("time",time[1])
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("open", current_globex_session_open)
+     + kv.n("close",current_cleanup_session_close)
+     + kv.n("high",math.max(current_globex_session_high, current_regular_session_high, current_cleanup_session_high))
+     + kv.n("low",math.min(current_globex_session_low, current_regular_session_low, current_cleanup_session_low))
+     + kv.n("volume",current_day_volume)
+     + kv.n("prev_close",previous_regular_session_close,false)
+     +"}"
+    alert(alert_json_close_fullday, alert.freq_once_per_bar_close)
+
+    
+
+// ------------------------------
+// 3:50 Bar Alert (Start of Last 10 Minutes)
+// ------------------------------
+// Detect 3:50 bar (15:50 in 24-hour format)
+is_350_bar = (current_hour == 15 and current_minute == 50)
+
+// Variables to track the 3:50-4:00 10-minute period
+var float last_10min_open = na
+var float last_10min_high = na
+var float last_10min_low = na
+var float last_10min_close = na
+var float last_10min_volume = 0.0
+
+// Initialize the 10-minute period tracking
+if is_350_bar
+    last_10min_open := open
+    last_10min_high := high
+    last_10min_low := low
+    last_10min_close := close
+    last_10min_volume := volume
+    
+    // Alert for 3:50 bar opening
+    alert_json_350_start = '{"source":"MTS-SESSION", "event":"last-10min-start",'
+     + kv.n("time",time)
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("open",open)
+     + kv.n("close",close)
+     + kv.n("high",high)
+     + kv.n("low",low)
+     + kv.n("volume",volume,false)
+     + "}"
+    alert(alert_json_350_start, alert.freq_once_per_bar)
+
+// Update the 10-minute period data during the last 10 minutes (3:50-4:00)
+if (current_time >= 15*60 + 50) and (current_time < 16*60)
+    last_10min_high := na(last_10min_high) ? high : math.max(last_10min_high, high)
+    last_10min_low := na(last_10min_low) ? low : math.min(last_10min_low, low)
+    last_10min_close := close
+    last_10min_volume := last_10min_volume + volume
+
+// ------------------------------
+// End of Day Alert with 10-Minute Summary
+// ------------------------------
+// Detect the last bar of the trading day (4:00 PM)
+is_end_of_day = (current_hour == 16 and current_minute == 0)
+
+if is_end_of_day and not na(last_10min_open)
+    // Alert for end of day with 10-minute bar summary
+    alert_json_350_summary = '{"source":"MTS-SESSION", "event":"last-10min-summary",'
+     + kv.n("time",time)
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("open",last_10min_open)
+     + kv.n("close",last_10min_close)
+     + kv.n("high",last_10min_high)
+     + kv.n("low",last_10min_low)
+     + kv.n("volume",last_10min_volume,false)
+     + "}"
+    alert(alert_json_350_summary, alert.freq_once_per_bar_close)
+
+// ------------------------------
+// New Alert for Bar Close
+// ------------------------------
+// This alert triggers on every new bar close and sends a JSON string with the previous bar's OHLC, volume, and time.
+// Source is set to "MTS-SESSION", event is "barclose", and includes the bar's closing time, volume, symbol, and interval.
+//bar_timestamp = str.tostring(time[1], "yyyy-MM-dd'T'HH:mm:ss'Z'")  // ISO 8601 format for the previous bar
+plot(previous_regular_session_close, color=color.red, title="d2_cash_close")
+plot(d2_cash_close, color=color.yellow, title="d2_cash_close")
+if false
+    alert_json_barclose = "{" + kv.s("source","MTS-SESSION")
+     + kv.s("event","barclose")
+     + kv.s("symbol",symbol)
+     + kv.s("interval",interval)
+     + kv.n("time",time)
+     + kv.n("open",open)
+     + kv.n("high",high)
+     + kv.n("low",low)
+     + kv.n("close",close)
+     + kv.n("volume",volume,false)
+     + '}'
+    //alert(alert_json_barclose, alert.freq_once_per_bar_close)
